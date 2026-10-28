@@ -2,11 +2,26 @@
 const express = require('express');
 const router = express.Router();
 
-const articleController = require('../controllers/articleController');
+const {
+    getArticleById,
+    createArticle,
+    updateArticle,
+    deleteArticle,
+    getMyArticles
+} = require('../controllers/articleController');
 
-router.get('/', articleController.getAllArticles);
-router.get('/:id', articleController.getArticleById);
-router.post('/', articleController.createArticle);
-router.put('/:id', articleController.updateArticle);
-router.delete('/:id', articleController.deleteArticle);
+const { protect } = require('../middlewares/authMiddleware');
+
+// Protected route: get only the articles of the logged-in user
+// IMPORTANT: Declare this route before /:id
+router.get('/my-articles', protect, getMyArticles);
+
+// Public read route: get an article by its ID
+router.get('/:id', getArticleById);
+
+// Protected write operations
+router.post('/', protect, createArticle);
+router.put('/:id', protect, updateArticle);
+router.delete('/:id', protect, deleteArticle);
+
 module.exports = router;

@@ -1,58 +1,153 @@
+
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const User = require('../models/userModel');
-const Article = require('../models/articleModel');
 
-// 1. Create a new user (POST /api/users)
-const createUser = async (req, res) => {
+// Generate JWT token
+const generateToken = (id, role) => {
+    return jwt.sign(
+        { id, role },
+        process.env.JWT_SECRET,
+        { expiresIn: '10s' } // Temporary: Exercise 3 testing
+    );
+};
+
+// POST /api/users/register (Registration)
+const registerUser = async (req, res) => {
     try {
-        const { name, email, age, role } = req.body;
+        const { name, email, password, age, role } = req.body;
 
-        if (!name || !email) {
+        if (!name || !email || !password) {
             return res.status(400).json({
-                message: 'Name and email are required'
+                message: 'Name, email, and password are required'
             });
         }
 
-        // Check for duplicate email
-        const exists = await User.findOne({ email });
+        const userExists = await User.findOne({ email });
 
-        if (exists) {
+        if (userExists) {
             return res.status(409).json({
-                message: 'Email already in use'
+                message: 'Email is already registered'
             });
         }
+
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
 
         const user = await User.create({
             name,
             email,
+            password: hashedPassword,
             age,
             role
         });
 
-        res.status(201).json(user);
+        return res.status(201).json({
+            _id: user._id,
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            token: generateToken(user._id.toString(), user.role)
+        });
+
     } catch (err) {
-        res.status(500).json({
+        if (err.name === 'ValidationError') {
+            return res.status(400).json({
+                message: err.message
+            });
+        }
+
+        if (err.code === 11000) {
+            return res.status(409).json({
+                message: 'Email is already registered'
+            });
+        }
+
+        return res.status(500).json({
             message: err.message
         });
     }
 };
 
-// 2. Retrieve all users (GET /api/users)
-const getUsers = async (req, res) => {
+// POST /api/users/login (Authentication)
+const loginUser = async (req, res) => {
     try {
-        const users = await User.find();
+        const { email, password } = req.body;
 
-        res.status(200).json(users);
+        if (!email || !password) {
+            return res.status(400).json({
+                message: 'Email and password are required'
+            });
+        }
+
+        const user = await User.findOne({ email });
+
+        if (!user) {
+            return res.status(401).json({
+                message: 'Invalid credentials'
+            });
+        }
+
+        const isMatch = await bcrypt.compare(password, user.password);
+
+        if (!isMatch) {
+            return res.status(401).json({
+                message: 'Invalid credentials'
+            });
+        }
+
+        return res.status(200).json({
+            _id: user._id,
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            token: generateToken(user._id.toString(), user.role)
+        });
+
     } catch (err) {
-        res.status(500).json({
+        return res.status(500).json({
             message: err.message
         });
     }
 };
 
-// 3. Retrieve a user by ID (GET /api/users/:id)
-const getUserById = async (req, res) => {
+// GET /api/users/profile (Protected profile)
+const getUserProfile = async (req, res) => {
     try {
-        const user = await User.findById(req.params.id);
+        return res.status(200).json(req.user);
+    } catch (err) {
+        return res.status(500).json({
+            message: err.message
+        });
+    }
+};
+
+// GET /api/users (Admin only)
+const getAllUsers = async (req, res) => {
+    try {
+        const users = await User.find().select('-password');
+
+        return res.status(200).json(users);
+
+    } catch (err) {
+        return res.status(500).json({
+            message: err.message
+        });
+    }
+};
+
+// Update authenticated user's password
+const updatePassword = async (req, res) => {
+    try {
+        const { oldPassword, newPassword } = req.body;
+
+        if (!oldPassword || !newPassword) {
+            return res.status(400).json({
+                message: 'Old password and new password are required'
+            });
+        }
+
+        const user = await User.findById(req.user._id);
 
         if (!user) {
             return res.status(404).json({
@@ -60,52 +155,34 @@ const getUserById = async (req, res) => {
             });
         }
 
-        res.status(200).json(user);
-   }catch (err) {
-        // Check whether the ID format is invalid
-        if (err.name === 'CastError') {
-            return res.status(400).json({
-                message: 'Identifiant de ressource invalide (format ObjectId attendu)'
+        const isMatch = await bcrypt.compare(
+            oldPassword,
+            user.password
+        );
+
+        if (!isMatch) {
+            return res.status(401).json({
+                message: 'Old password is incorrect'
             });
         }
 
-        // Handle other unexpected errors
-        return res.status(500).json({
-            message: err.message
-        });
-    }
-};
+        const salt = await bcrypt.genSalt(10);
 
-//Delete a user by ID (DELETE /api/users/:id)
+        user.password = await bcrypt.hash(newPassword, salt);
 
-const deleteUser = async (req, res) => {
-    try {
-        // Check whether the user has published articles
-        const article = await Article.findOne({
-            author: req.params.id
-        });
-
-        // If an article exists, prevent user deletion
-        if (article) {
-            return res.status(400).json({
-                message: "Impossible de supprimer un utilisateur ayant des articles publies"
-            });
-        }
-
-        // Otherwise, delete the user
-        const user = await User.findByIdAndDelete(req.params.id);
-
-        if (!user) {
-            return res.status(404).json({
-                message: "Utilisateur introuvable"
-            });
-        }
+        await user.save();
 
         return res.status(200).json({
-            message: "Utilisateur supprimé avec succès"
+            message: 'Password updated successfully'
         });
 
     } catch (err) {
+        if (err.name === 'ValidationError') {
+            return res.status(400).json({
+                message: err.message
+            });
+        }
+
         return res.status(500).json({
             message: err.message
         });
@@ -113,8 +190,9 @@ const deleteUser = async (req, res) => {
 };
 
 module.exports = {
-    createUser,
-    getUsers,
-    getUserById,
-    deleteUser
+    registerUser,
+    loginUser,
+    getUserProfile,
+    getAllUsers,
+    updatePassword
 };
